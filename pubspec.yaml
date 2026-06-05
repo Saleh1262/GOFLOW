@@ -12,6 +12,7 @@ dependencies:
     sdk: flutter
   flutter_blue_plus: ^1.32.12
   permission_handler: ^11.3.1
+  speech_to_text: ^6.6.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0
