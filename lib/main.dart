@@ -2,14 +2,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 // ============================================================
-//  DEMO MODE — set to true to test the app on ANY phone with NO
-//  hardware (no PCB, no Bluetooth). The button works and the bar
-//  animates exactly like the real thing. Set back to false when
-//  your PCB is ready and you want to talk to the real device.
+//  DEMO MODE — true = test on ANY phone with NO hardware
+//  (Bluetooth + voice both work). false = talk to the real PCB.
 // ============================================================
 const bool kDemoMode = true;
+
+// How long a voice "open" stays open before auto-closing (safety).
+const int kAutoCloseSecs = 30;
 
 // ---- BLE contract (must match the firmware) ----
 final Guid kSvcUuid   = Guid("a0b40001-7de2-4a3f-9c11-6f0f9e5a12b3");
@@ -55,12 +57,27 @@ class _ControlScreenState extends State<ControlScreen> {
   StreamSubscription<List<ScanResult>>? _scanSub;
   StreamSubscription<BluetoothConnectionState>? _connSub;
   StreamSubscription<List<int>>? _stateSub;
-  Timer? _holdTimer;
-  Timer? _demoTimer;
 
+  Timer? _cmdTimer;    // heartbeat: writes "open" repeatedly while open
+  Timer? _demoTimer;   // demo-mode position animation
+  Timer? _voiceTimer;  // 30s auto-close countdown for voice-open
+
+  // ---- voice ----
+  final SpeechToText _speech = SpeechToText();
+  bool _speechReady = false;
+  bool _voiceOn = false;     // mic listening enabled
+  String _lastHeard = '';
+
+  // ---- open intent ----
+  bool _holding = false;       // finger on the button
+  bool _voiceLatched = false;  // voice said "open"
+  int _voiceRemaining = 0;     // seconds left before auto-close
+
+  bool get _open => _holding || _voiceLatched;
+
+  // ---- valve state from device ----
   int _stateByte = 0; // 0 closed,1 opening,2 open,3 closing
   int _pct = 0;
-  bool _holding = false;
 
   @override
   void initState() {
@@ -69,30 +86,37 @@ class _ControlScreenState extends State<ControlScreen> {
   }
 
   Future<void> _bootstrap() async {
-    if (kDemoMode) { _startDemo(); return; }
+    if (kDemoMode) {
+      _startDemo();
+      await _initVoice();
+      return;
+    }
     await [
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
       Permission.locationWhenInUse,
+      Permission.microphone,
     ].request();
+    await _initVoice();
     _startScan();
   }
 
-  // Pretend a device is connected and integrate position locally.
+  // ---- DEMO: pretend a device is connected, integrate position locally ----
   void _startDemo() {
     setState(() => _conn = Conn.ready);
     _demoTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
-      const step = 50 / 4000 * 100; // 4s full travel, matches STROKE_MS
-      if (_holding && _pct < 100) _pct = (_pct + step).clamp(0, 100).round();
-      if (!_holding && _pct > 0)  _pct = (_pct - step).clamp(0, 100).round();
+      const step = 50 / 4000 * 100; // 4s full travel
+      if (_open && _pct < 100) _pct = (_pct + step).clamp(0, 100).round();
+      if (!_open && _pct > 0)  _pct = (_pct - step).clamp(0, 100).round();
       int s;
-      if (_pct <= 0 && !_holding)      s = 0; // closed
-      else if (_pct >= 100 && _holding) s = 2; // open
-      else s = _holding ? 1 : 3;              // opening / closing
+      if (_pct <= 0 && !_open)      s = 0;
+      else if (_pct >= 100 && _open) s = 2;
+      else s = _open ? 1 : 3;
       if (mounted) setState(() => _stateByte = s);
     });
   }
 
+  // ---- BLE ----
   Future<void> _startScan() async {
     await _teardownConnection();
     setState(() => _conn = Conn.scanning);
@@ -151,39 +175,141 @@ class _ControlScreenState extends State<ControlScreen> {
   }
 
   Future<void> _teardownConnection() async {
-    _endHold();
+    _holding = false;
+    _voiceLatched = false;
+    _cmdTimer?.cancel(); _cmdTimer = null;
+    _voiceTimer?.cancel(); _voiceTimer = null;
     await _stateSub?.cancel();
     await _connSub?.cancel();
     try { await _device?.disconnect(); } catch (_) {}
     _cmd = null; _state = null; _device = null;
   }
 
-  // ---- hold-to-open: write 0x01 immediately, then every 400ms; 0x00 on release ----
-  void _startHold() {
-    if (kDemoMode) { setState(() => _holding = true); return; }
-    if (_conn != Conn.ready || _cmd == null) return;
-    setState(() => _holding = true);
-    _sendCmd(0x01);
-    _holdTimer?.cancel();
-    _holdTimer = Timer.periodic(const Duration(milliseconds: 400), (_) => _sendCmd(0x01));
-  }
-
-  void _endHold() {
-    _holdTimer?.cancel();
-    _holdTimer = null;
-    if (_holding) _sendCmd(0x00);
-    if (mounted) setState(() => _holding = false);
+  // ---- the one place that turns "open intent" into action ----
+  void _applyOpen() {
+    if (_open) {
+      if (_cmdTimer == null) {
+        _sendCmd(0x01);
+        _cmdTimer = Timer.periodic(const Duration(milliseconds: 400), (_) => _sendCmd(0x01));
+      }
+    } else {
+      _cmdTimer?.cancel();
+      _cmdTimer = null;
+      _sendCmd(0x00);
+    }
+    if (mounted) setState(() {});
   }
 
   void _sendCmd(int byte) {
     final c = _cmd;
-    if (c == null) return;
+    if (c == null) return; // demo or not connected: no-op
     c.write([byte], withoutResponse: true).catchError((_) {});
+  }
+
+  // ---- button: hold-to-open ----
+  void _startHold() {
+    if (_conn != Conn.ready) return;
+    _holding = true;
+    _applyOpen();
+  }
+  void _endHold() {
+    if (!_holding) return;
+    _holding = false;
+    _applyOpen();
+  }
+
+  // ---- voice commands ----
+  void _voiceOpen() {
+    _voiceLatched = true;
+    _voiceRemaining = kAutoCloseSecs;
+    _voiceTimer?.cancel();
+    _voiceTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      _voiceRemaining--;
+      if (_voiceRemaining <= 0) {
+        t.cancel();
+        _voiceClose(); // auto-close safety
+      } else if (mounted) {
+        setState(() {});
+      }
+    });
+    _applyOpen();
+  }
+
+  void _voiceClose() {
+    _voiceLatched = false;
+    _voiceTimer?.cancel();
+    _voiceTimer = null;
+    _voiceRemaining = 0;
+    _applyOpen();
+  }
+
+  // ---- speech engine ----
+  Future<void> _initVoice() async {
+    try {
+      _speechReady = await _speech.initialize(
+        onStatus: _onSpeechStatus,
+        onError: (e) {},
+      );
+    } catch (_) {
+      _speechReady = false;
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _toggleVoice() {
+    if (!_speechReady) return;
+    if (_voiceOn) {
+      _voiceOn = false;
+      _speech.stop();
+    } else {
+      _voiceOn = true;
+      _listen();
+    }
+    setState(() {});
+  }
+
+  void _listen() {
+    if (!_voiceReady()) return;
+    _speech.listen(
+      onResult: _onSpeech,
+      listenFor: const Duration(seconds: 8),
+      pauseFor: const Duration(seconds: 2),
+      partialResults: true,
+    );
+  }
+
+  bool _voiceReady() => _speechReady && _voiceOn;
+
+  void _onSpeechStatus(String status) {
+    // keep listening continuously while voice is on
+    if ((status == 'done' || status == 'notListening') && _voiceOn) {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (_voiceReady() && !_speech.isListening) _listen();
+      });
+    }
+  }
+
+  void _onSpeech(SpeechRecognitionResult result) {
+    final words = result.recognizedWords.toLowerCase();
+    if (words.isEmpty) return;
+    _lastHeard = words;
+    // act on whole words to avoid false triggers
+    final hasOpen = RegExp(r'\bopen\b').hasMatch(words);
+    final hasClose = RegExp(r'\bclose\b').hasMatch(words);
+    if (hasClose) {
+      _voiceClose();
+    } else if (hasOpen) {
+      _voiceOpen();
+    }
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     _demoTimer?.cancel();
+    _voiceTimer?.cancel();
+    _cmdTimer?.cancel();
+    _speech.stop();
     _teardownConnection();
     super.dispose();
   }
@@ -205,13 +331,14 @@ class _ControlScreenState extends State<ControlScreen> {
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _header(),
               _statusBlock(),
               _holdButton(ready),
+              _voicePanel(),
               _footer(),
             ],
           ),
@@ -224,11 +351,11 @@ class _ControlScreenState extends State<ControlScreen> {
     return Column(children: [
       RichText(
         text: const TextSpan(
-          style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, letterSpacing: .5, color: Colors.white),
+          style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, letterSpacing: .5, color: Colors.white),
           children: [TextSpan(text: 'GO'), TextSpan(text: 'FLOW', style: TextStyle(color: kCyan))],
         ),
       ),
-      const SizedBox(height: 8),
+      const SizedBox(height: 6),
       Row(mainAxisAlignment: MainAxisAlignment.center, children: [
         Container(width: 8, height: 8, decoration: BoxDecoration(
           shape: BoxShape.circle, color: _conn == Conn.ready ? kCyan : const Color(0xFF3A6470))),
@@ -253,7 +380,7 @@ class _ControlScreenState extends State<ControlScreen> {
       Text(_conn == Conn.ready ? _statusText : '—',
         style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, letterSpacing: 3,
           color: _isOpen ? kCyan : kMint)),
-      const SizedBox(height: 12),
+      const SizedBox(height: 10),
       ClipRRect(
         borderRadius: BorderRadius.circular(6),
         child: SizedBox(
@@ -265,20 +392,26 @@ class _ControlScreenState extends State<ControlScreen> {
           ),
         ),
       ),
+      if (_voiceLatched)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text('Auto-closing in $_voiceRemaining s',
+            style: const TextStyle(fontSize: 12, color: kCyan, fontWeight: FontWeight.w600)),
+        ),
     ]);
   }
 
   Widget _holdButton(bool ready) {
-    final active = _holding;
+    final active = _open;
     return GestureDetector(
       onTapDown: (_) => _startHold(),
       onTapUp: (_) => _endHold(),
       onTapCancel: _endHold,
       child: AnimatedScale(
-        scale: active ? 0.97 : 1.0,
+        scale: _holding ? 0.97 : 1.0,
         duration: const Duration(milliseconds: 80),
         child: Container(
-          width: 230, height: 230,
+          width: 210, height: 210,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: active ? kCyan : kInk2,
@@ -287,11 +420,11 @@ class _ControlScreenState extends State<ControlScreen> {
           child: Center(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               Text('HOLD TO OPEN',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, letterSpacing: 1,
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, letterSpacing: 1,
                   color: active ? const Color(0xFF03222A) : (ready ? const Color(0xFFCFE9EF) : kMuted))),
-              const SizedBox(height: 6),
-              Text(ready ? 'release to close' : 'connect first',
-                style: TextStyle(fontSize: 12, color: active ? const Color(0xFF06363F) : kMuted)),
+              const SizedBox(height: 5),
+              Text(ready ? 'or use voice below' : 'connect first',
+                style: TextStyle(fontSize: 11, color: active ? const Color(0xFF06363F) : kMuted)),
             ]),
           ),
         ),
@@ -299,16 +432,49 @@ class _ControlScreenState extends State<ControlScreen> {
     );
   }
 
+  Widget _voicePanel() {
+    final on = _voiceOn;
+    return Column(children: [
+      GestureDetector(
+        onTap: _speechReady ? _toggleVoice : null,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          decoration: BoxDecoration(
+            color: on ? kCyan : kInk2,
+            borderRadius: BorderRadius.circular(30),
+            border: Border.all(color: kCyan.withOpacity(.35)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(on ? Icons.mic : Icons.mic_none,
+              color: on ? const Color(0xFF03222A) : kCyan, size: 20),
+            const SizedBox(width: 10),
+            Text(
+              !_speechReady ? 'Voice unavailable'
+                : on ? 'Listening — say “open” or “close”' : 'Tap to turn on voice',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                color: on ? const Color(0xFF03222A) : Colors.white)),
+          ]),
+        ),
+      ),
+      if (on && _lastHeard.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text('heard: “$_lastHeard”',
+            style: const TextStyle(fontSize: 11, color: kMuted, fontStyle: FontStyle.italic)),
+        ),
+    ]);
+  }
+
   Widget _footer() {
     final disconnected = _conn == Conn.disconnected || _conn == Conn.idle;
     return Column(children: [
       const Text(
-        'The valve stays closed unless you are holding the button. '
-        'It closes automatically if you let go or move out of range.',
+        'Hold the button or say “open”. The valve closes when you release, '
+        'say “close”, or after 30 seconds — whichever comes first.',
         textAlign: TextAlign.center,
-        style: TextStyle(fontSize: 12, color: kMuted, height: 1.5),
+        style: TextStyle(fontSize: 11, color: kMuted, height: 1.5),
       ),
-      const SizedBox(height: 14),
+      const SizedBox(height: 10),
       if (disconnected)
         OutlinedButton(
           onPressed: _startScan,
