@@ -58,7 +58,7 @@ class ControlScreen extends StatefulWidget {
   State<ControlScreen> createState() => _ControlScreenState();
 }
 
-class _ControlScreenState extends State<ControlScreen> {
+class _ControlScreenState extends State<ControlScreen> with SingleTickerProviderStateMixin {
   final ValueNotifier<Conn> _connN = ValueNotifier(Conn.idle);
   Conn get _conn => _connN.value;
   void _setConn(Conn c) { _connN.value = c; if (mounted) setState(() {}); }
@@ -88,9 +88,12 @@ class _ControlScreenState extends State<ControlScreen> {
   int _stateByte = 0;
   int _pct = 0;
 
+  late final AnimationController _bagCtrl;
+
   @override
   void initState() {
     super.initState();
+    _bagCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 3));
     _bootstrap();
   }
 
@@ -206,10 +209,13 @@ class _ControlScreenState extends State<ControlScreen> {
         _sendCmd(0x01);
         _cmdTimer = Timer.periodic(const Duration(milliseconds: 400), (_) => _sendCmd(0x01));
       }
+      if (!_bagCtrl.isAnimating) _bagCtrl.repeat();
     } else {
       _cmdTimer?.cancel();
       _cmdTimer = null;
       _sendCmd(0x00);
+      _bagCtrl.stop();
+      _bagCtrl.value = 0.0;
     }
     if (mounted) setState(() {});
   }
@@ -303,6 +309,7 @@ class _ControlScreenState extends State<ControlScreen> {
 
   @override
   void dispose() {
+    _bagCtrl.dispose();
     _demoTimer?.cancel();
     _voiceTimer?.cancel();
     _cmdTimer?.cancel();
@@ -392,7 +399,7 @@ class _ControlScreenState extends State<ControlScreen> {
           ],
         ),
       ]),
-      Image.asset('logo.png', height: 40),
+      Image.asset('logo.png', height: 72),
       const SizedBox(height: 8),
       GestureDetector(
         onTap: _openConnect,
@@ -420,11 +427,54 @@ class _ControlScreenState extends State<ControlScreen> {
             backgroundColor: const Color(0xFF0A3742),
             valueColor: const AlwaysStoppedAnimation(kCyan))),
       ),
+      const SizedBox(height: 14),
+      _bag(),
+      if (_open)
+        const Padding(padding: EdgeInsets.only(top: 6),
+          child: Text('draining…', style: TextStyle(fontSize: 11, color: kMint, letterSpacing: 1))),
       if (_voiceLatched)
         Padding(padding: const EdgeInsets.only(top: 8),
           child: Text('Auto-closing in $_voiceRemaining s',
             style: const TextStyle(fontSize: 12, color: kCyan, fontWeight: FontWeight.w600))),
     ]);
+  }
+
+  Widget _bag() {
+    return SizedBox(
+      width: 58, height: 74,
+      child: AnimatedBuilder(
+        animation: _bagCtrl,
+        builder: (context, _) {
+          final v = _bagCtrl.value;
+          final level = _open ? (0.72 - 0.60 * v).clamp(0.10, 0.72) : 0.72;
+          final frac = (v * 3) % 1.0;
+          return Stack(clipBehavior: Clip.none, children: [
+            Positioned.fill(child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF0A3742),
+                border: Border.all(color: const Color(0xFF2C5560), width: 2),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(8), bottom: Radius.circular(14))),
+              clipBehavior: Clip.antiAlias,
+              child: Align(alignment: Alignment.bottomCenter,
+                child: FractionallySizedBox(heightFactor: level, widthFactor: 1,
+                  child: Container(color: const Color(0xFF2BB6C9)))),
+            )),
+            Positioned(bottom: -6, left: 25, child: Container(width: 8, height: 8,
+              decoration: const BoxDecoration(color: Color(0xFF2C5560),
+                borderRadius: BorderRadius.vertical(bottom: Radius.circular(3))))),
+            if (_open)
+              Positioned(bottom: -6 - frac * 16, left: 26,
+                child: Opacity(opacity: (1 - frac).clamp(0.0, 1.0),
+                  child: Transform.rotate(angle: 0.785,
+                    child: Container(width: 6, height: 6,
+                      decoration: const BoxDecoration(color: Color(0xFF2BB6C9),
+                        borderRadius: BorderRadius.only(
+                          topLeft: Radius.circular(3), topRight: Radius.circular(3),
+                          bottomRight: Radius.circular(3))))))),
+          ]);
+        },
+      ),
+    );
   }
 
   Widget _holdButton(bool ready) {
@@ -437,7 +487,7 @@ class _ControlScreenState extends State<ControlScreen> {
         scale: _holding ? 0.97 : 1.0,
         duration: const Duration(milliseconds: 80),
         child: Container(
-          width: 200, height: 200,
+          width: 176, height: 176,
           decoration: BoxDecoration(shape: BoxShape.circle,
             color: active ? kCyan : kInk2,
             border: Border.all(color: active ? Colors.white.withOpacity(.4) : kCyan.withOpacity(.35), width: 2)),
