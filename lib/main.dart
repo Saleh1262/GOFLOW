@@ -374,6 +374,7 @@ class _ControlScreenState extends State<ControlScreen> {
   }
 
   Widget _topBarAndLogo() {
+    final ready = _conn == Conn.ready;
     return Column(children: [
       Row(mainAxisAlignment: MainAxisAlignment.end, children: [
         PopupMenuButton<String>(
