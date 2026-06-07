@@ -1,10 +1,10 @@
 name: goflow_app
-description: GoFlow valve controller — BLE native app for the XIAO nRF52840.
+description: GoFlowX — app-controlled flow management for the XIAO nRF52840.
 publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.3.0 <4.0.0'
+  sdk: '>=3.4.0 <4.0.0'
   flutter: '>=3.19.0'
 
 dependencies:
@@ -12,10 +12,20 @@ dependencies:
     sdk: flutter
   flutter_blue_plus: ^1.32.12
   permission_handler: ^11.3.1
-  speech_to_text: ^6.6.0
+  speech_to_text: ^7.3.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.1
 
 flutter:
   uses-material-design: true
+  assets:
+    - logo.png
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "icon.png"
+  remove_alpha_ios: true
+  min_sdk_android: 21
