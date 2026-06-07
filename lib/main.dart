@@ -283,7 +283,7 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
       listenOptions: SpeechListenOptions(
         partialResults: true,
         cancelOnError: true,
-        onDevice: true,
+        onDevice: false,
         listenMode: ListenMode.dictation,
       ),
     );
@@ -303,8 +303,11 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
     final words = result.recognizedWords.toLowerCase();
     if (words.isEmpty) return;
     _lastHeard = words;
-    if (RegExp(r'\bclose\b').hasMatch(words)) _voiceClose();
-    else if (RegExp(r'\bopen\b').hasMatch(words)) _voiceOpen();
+    if (words.contains('close') || words.contains('shut') || words.contains('stop')) {
+      _voiceClose();
+    } else if (words.contains('open') || words.contains('drain')) {
+      _voiceOpen();
+    }
     if (mounted) setState(() {});
   }
 
