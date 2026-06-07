@@ -4,6 +4,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
+import 'package:flutter/services.dart';
 
 // ============================================================
 //  DEMO MODE — true = test on ANY phone with NO hardware
@@ -58,7 +59,7 @@ class ControlScreen extends StatefulWidget {
   State<ControlScreen> createState() => _ControlScreenState();
 }
 
-class _ControlScreenState extends State<ControlScreen> with SingleTickerProviderStateMixin {
+class _ControlScreenState extends State<ControlScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final ValueNotifier<Conn> _connN = ValueNotifier(Conn.idle);
   Conn get _conn => _connN.value;
   void _setConn(Conn c) { _connN.value = c; if (mounted) setState(() {}); }
@@ -93,8 +94,18 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _bagCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 3));
     _bootstrap();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (_voiceOn && _speechReady && !_speech.isListening) _listen();
+    } else {
+      _speech.stop();
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -303,7 +314,10 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
     final words = result.recognizedWords.toLowerCase();
     if (words.isEmpty) return;
     _lastHeard = words;
-    if (words.contains('close') || words.contains('shut') || words.contains('stop')) {
+    if (words.contains('exit') || words.contains('quit') || words.contains('goodbye') ||
+        (words.contains('close') && words.contains('app'))) {
+      _closeApp();
+    } else if (words.contains('close') || words.contains('shut') || words.contains('stop')) {
       _voiceClose();
     } else if (words.contains('open') || words.contains('drain')) {
       _voiceOpen();
@@ -313,6 +327,7 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _bagCtrl.dispose();
     _demoTimer?.cancel();
     _voiceTimer?.cancel();
@@ -338,6 +353,14 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
       builder: (_) => ConnectScreen(status: _connN, onSearch: _userSearch),
     ));
   }
+  void _closeApp() {
+    _holding = false;
+    _voiceLatched = false;
+    _voiceOn = false;
+    _applyOpen();        // sends the valve a close command and stops the animation
+    _speech.stop();      // stop listening so the beeping stops
+    SystemNavigator.pop(); // close the app
+  }
   void _showHelp() {
     showDialog(context: context, builder: (_) => AlertDialog(
       backgroundColor: kInk2,
@@ -345,6 +368,7 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
       content: const Text(
         '• Hold the circle to open the valve; release to close.\n'
         '• Or just say “open” and “close”.\n'
+        '• Say “exit” (or “quit”) to close the app.\n'
         '• It always closes after 30 seconds for safety.\n\n'
         'Not connected? Open the menu → Connect.',
         style: TextStyle(color: kMuted, height: 1.5)),
@@ -395,11 +419,13 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
             if (v == 'connect') _openConnect();
             else if (v == 'help') _showHelp();
             else if (v == 'about') _showAbout();
+            else if (v == 'exit') _closeApp();
           },
           itemBuilder: (_) => const [
             PopupMenuItem(value: 'connect', child: Text('Connect', style: TextStyle(color: Colors.white))),
             PopupMenuItem(value: 'help', child: Text('Help', style: TextStyle(color: Colors.white))),
             PopupMenuItem(value: 'about', child: Text('About', style: TextStyle(color: Colors.white))),
+            PopupMenuItem(value: 'exit', child: Text('Close app', style: TextStyle(color: Color(0xFFFF6B6B)))),
           ],
         ),
       ]),
