@@ -41,8 +41,15 @@ jobs:
         run: |
           sed -i 's#<application#<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />\n    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.INTERNET" />\n    <queries>\n        <intent>\n            <action android:name="android.speech.RecognitionService" />\n        </intent>\n    </queries>\n    <application#' android/app/src/main/AndroidManifest.xml
 
+      - name: Set the app name to GoFlowX
+        run: |
+          sed -i '0,/android:label="[^"]*"/s//android:label="GoFlowX"/' android/app/src/main/AndroidManifest.xml
+
       - name: Download the packages
         run: flutter pub get
+
+      - name: Generate the app icon from icon.png
+        run: dart run flutter_launcher_icons
 
       - name: Build the app
         run: flutter build apk --release
