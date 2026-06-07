@@ -3,14 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+import 'package:speech_to_text/speech_recognition_result.dart';
 
 // ============================================================
 //  DEMO MODE — true = test on ANY phone with NO hardware
-//  (Bluetooth + voice both work). false = talk to the real PCB.
+//  (Bluetooth + voice both simulated). false = talk to real PCB.
 // ============================================================
 const bool kDemoMode = true;
 
-// How long a voice "open" stays open before auto-closing (safety).
 const int kAutoCloseSecs = 30;
 
 // ---- BLE contract (must match the firmware) ----
@@ -32,7 +32,7 @@ class GoFlowApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'GoFlow',
+      title: 'GoFlowX',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(scaffoldBackgroundColor: kInk, fontFamily: 'Roboto'),
       home: const ControlScreen(),
@@ -42,6 +42,16 @@ class GoFlowApp extends StatelessWidget {
 
 enum Conn { idle, scanning, connecting, ready, disconnected }
 
+String connLabel(Conn c) {
+  switch (c) {
+    case Conn.scanning: return 'SEARCHING…';
+    case Conn.connecting: return 'CONNECTING…';
+    case Conn.ready: return 'CONNECTED';
+    case Conn.disconnected: return 'DISCONNECTED';
+    default: return 'NOT CONNECTED';
+  }
+}
+
 class ControlScreen extends StatefulWidget {
   const ControlScreen({super.key});
   @override
@@ -49,7 +59,10 @@ class ControlScreen extends StatefulWidget {
 }
 
 class _ControlScreenState extends State<ControlScreen> {
-  Conn _conn = Conn.idle;
+  final ValueNotifier<Conn> _connN = ValueNotifier(Conn.idle);
+  Conn get _conn => _connN.value;
+  void _setConn(Conn c) { _connN.value = c; if (mounted) setState(() {}); }
+
   BluetoothDevice? _device;
   BluetoothCharacteristic? _cmd;
   BluetoothCharacteristic? _state;
@@ -58,25 +71,21 @@ class _ControlScreenState extends State<ControlScreen> {
   StreamSubscription<BluetoothConnectionState>? _connSub;
   StreamSubscription<List<int>>? _stateSub;
 
-  Timer? _cmdTimer;    // heartbeat: writes "open" repeatedly while open
-  Timer? _demoTimer;   // demo-mode position animation
-  Timer? _voiceTimer;  // 30s auto-close countdown for voice-open
+  Timer? _cmdTimer;
+  Timer? _demoTimer;
+  Timer? _voiceTimer;
 
-  // ---- voice ----
   final SpeechToText _speech = SpeechToText();
   bool _speechReady = false;
-  bool _voiceOn = false;     // mic listening enabled
+  bool _voiceOn = false;
   String _lastHeard = '';
 
-  // ---- open intent ----
-  bool _holding = false;       // finger on the button
-  bool _voiceLatched = false;  // voice said "open"
-  int _voiceRemaining = 0;     // seconds left before auto-close
-
+  bool _holding = false;
+  bool _voiceLatched = false;
+  int _voiceRemaining = 0;
   bool get _open => _holding || _voiceLatched;
 
-  // ---- valve state from device ----
-  int _stateByte = 0; // 0 closed,1 opening,2 open,3 closing
+  int _stateByte = 0;
   int _pct = 0;
 
   @override
@@ -101,11 +110,10 @@ class _ControlScreenState extends State<ControlScreen> {
     _startScan();
   }
 
-  // ---- DEMO: pretend a device is connected, integrate position locally ----
   void _startDemo() {
-    setState(() => _conn = Conn.ready);
+    _setConn(Conn.ready);
     _demoTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
-      const step = 50 / 4000 * 100; // 4s full travel
+      const step = 50 / 4000 * 100;
       if (_open && _pct < 100) _pct = (_pct + step).clamp(0, 100).round();
       if (!_open && _pct > 0)  _pct = (_pct - step).clamp(0, 100).round();
       int s;
@@ -116,10 +124,19 @@ class _ControlScreenState extends State<ControlScreen> {
     });
   }
 
-  // ---- BLE ----
+  // Triggered by the Connect screen's "Search" button (and at startup).
+  void _userSearch() {
+    if (kDemoMode) {
+      _setConn(Conn.scanning);
+      Future.delayed(const Duration(milliseconds: 1500), () => _setConn(Conn.ready));
+      return;
+    }
+    _startScan();
+  }
+
   Future<void> _startScan() async {
     await _teardownConnection();
-    setState(() => _conn = Conn.scanning);
+    _setConn(Conn.scanning);
     _scanSub?.cancel();
     _scanSub = FlutterBluePlus.scanResults.listen((results) async {
       if (results.isEmpty) return;
@@ -134,17 +151,15 @@ class _ControlScreenState extends State<ControlScreen> {
         timeout: const Duration(seconds: 15),
       );
     } catch (_) {
-      if (mounted) setState(() => _conn = Conn.disconnected);
+      _setConn(Conn.disconnected);
     }
   }
 
   Future<void> _connect(BluetoothDevice device) async {
     _device = device;
-    setState(() => _conn = Conn.connecting);
+    _setConn(Conn.connecting);
     _connSub = device.connectionState.listen((s) {
-      if (s == BluetoothConnectionState.disconnected && mounted) {
-        setState(() => _conn = Conn.disconnected);
-      }
+      if (s == BluetoothConnectionState.disconnected) _setConn(Conn.disconnected);
     });
     try {
       await device.connect(timeout: const Duration(seconds: 12));
@@ -158,7 +173,7 @@ class _ControlScreenState extends State<ControlScreen> {
       }
       if (_cmd == null || _state == null) {
         await device.disconnect();
-        if (mounted) setState(() => _conn = Conn.disconnected);
+        _setConn(Conn.disconnected);
         return;
       }
       await _state!.setNotifyValue(true);
@@ -168,9 +183,9 @@ class _ControlScreenState extends State<ControlScreen> {
         }
       });
       device.cancelWhenDisconnected(_stateSub!);
-      if (mounted) setState(() => _conn = Conn.ready);
+      _setConn(Conn.ready);
     } catch (_) {
-      if (mounted) setState(() => _conn = Conn.disconnected);
+      _setConn(Conn.disconnected);
     }
   }
 
@@ -185,7 +200,6 @@ class _ControlScreenState extends State<ControlScreen> {
     _cmd = null; _state = null; _device = null;
   }
 
-  // ---- the one place that turns "open intent" into action ----
   void _applyOpen() {
     if (_open) {
       if (_cmdTimer == null) {
@@ -202,11 +216,10 @@ class _ControlScreenState extends State<ControlScreen> {
 
   void _sendCmd(int byte) {
     final c = _cmd;
-    if (c == null) return; // demo or not connected: no-op
+    if (c == null) return;
     c.write([byte], withoutResponse: true).catchError((_) {});
   }
 
-  // ---- button: hold-to-open ----
   void _startHold() {
     if (_conn != Conn.ready) return;
     _holding = true;
@@ -218,19 +231,14 @@ class _ControlScreenState extends State<ControlScreen> {
     _applyOpen();
   }
 
-  // ---- voice commands ----
   void _voiceOpen() {
     _voiceLatched = true;
     _voiceRemaining = kAutoCloseSecs;
     _voiceTimer?.cancel();
     _voiceTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       _voiceRemaining--;
-      if (_voiceRemaining <= 0) {
-        t.cancel();
-        _voiceClose(); // auto-close safety
-      } else if (mounted) {
-        setState(() {});
-      }
+      if (_voiceRemaining <= 0) { t.cancel(); _voiceClose(); }
+      else if (mounted) setState(() {});
     });
     _applyOpen();
   }
@@ -243,28 +251,20 @@ class _ControlScreenState extends State<ControlScreen> {
     _applyOpen();
   }
 
-  // ---- speech engine ----
   Future<void> _initVoice() async {
     try {
-      _speechReady = await _speech.initialize(
-        onStatus: _onSpeechStatus,
-        onError: (e) {},
-      );
+      _speechReady = await _speech.initialize(onStatus: _onSpeechStatus, onError: (e) {});
     } catch (_) {
       _speechReady = false;
     }
+    if (_speechReady) { _voiceOn = true; _listen(); }
     if (mounted) setState(() {});
   }
 
   void _toggleVoice() {
     if (!_speechReady) return;
-    if (_voiceOn) {
-      _voiceOn = false;
-      _speech.stop();
-    } else {
-      _voiceOn = true;
-      _listen();
-    }
+    if (_voiceOn) { _voiceOn = false; _speech.stop(); }
+    else { _voiceOn = true; _listen(); }
     setState(() {});
   }
 
@@ -274,14 +274,17 @@ class _ControlScreenState extends State<ControlScreen> {
       onResult: _onSpeech,
       listenFor: const Duration(seconds: 8),
       pauseFor: const Duration(seconds: 2),
-      partialResults: true,
+      listenOptions: SpeechListenOptions(
+        partialResults: true,
+        cancelOnError: true,
+        listenMode: ListenMode.dictation,
+      ),
     );
   }
 
   bool _voiceReady() => _speechReady && _voiceOn;
 
   void _onSpeechStatus(String status) {
-    // keep listening continuously while voice is on
     if ((status == 'done' || status == 'notListening') && _voiceOn) {
       Future.delayed(const Duration(milliseconds: 300), () {
         if (_voiceReady() && !_speech.isListening) _listen();
@@ -293,14 +296,8 @@ class _ControlScreenState extends State<ControlScreen> {
     final words = result.recognizedWords.toLowerCase();
     if (words.isEmpty) return;
     _lastHeard = words;
-    // act on whole words to avoid false triggers
-    final hasOpen = RegExp(r'\bopen\b').hasMatch(words);
-    final hasClose = RegExp(r'\bclose\b').hasMatch(words);
-    if (hasClose) {
-      _voiceClose();
-    } else if (hasOpen) {
-      _voiceOpen();
-    }
+    if (RegExp(r'\bclose\b').hasMatch(words)) _voiceClose();
+    else if (RegExp(r'\bopen\b').hasMatch(words)) _voiceOpen();
     if (mounted) setState(() {});
   }
 
@@ -322,8 +319,37 @@ class _ControlScreenState extends State<ControlScreen> {
       default: return 'CLOSED';
     }
   }
-
   bool get _isOpen => _stateByte != 0;
+
+  // ---- menu actions ----
+  void _openConnect() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ConnectScreen(status: _connN, onSearch: _userSearch),
+    ));
+  }
+  void _showHelp() {
+    showDialog(context: context, builder: (_) => AlertDialog(
+      backgroundColor: kInk2,
+      title: const Text('How to use', style: TextStyle(color: Colors.white)),
+      content: const Text(
+        '• Hold the circle to open the valve; release to close.\n'
+        '• Or just say “open” and “close”.\n'
+        '• It always closes after 30 seconds for safety.\n\n'
+        'Not connected? Open the menu → Connect.',
+        style: TextStyle(color: kMuted, height: 1.5)),
+      actions: [TextButton(onPressed: () => Navigator.pop(context),
+        child: const Text('Got it', style: TextStyle(color: kCyan)))],
+    ));
+  }
+  void _showAbout() {
+    showAboutDialog(
+      context: context,
+      applicationName: 'GoFlowX',
+      applicationVersion: '1.0.0',
+      applicationIcon: Image.asset('logo.png', height: 30),
+      children: const [Text('Smart, app-controlled flow management in one device.')],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -331,11 +357,11 @@ class _ControlScreenState extends State<ControlScreen> {
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _header(),
+              _topBarAndLogo(),
               _statusBlock(),
               _holdButton(ready),
               _voicePanel(),
@@ -347,32 +373,36 @@ class _ControlScreenState extends State<ControlScreen> {
     );
   }
 
-  Widget _header() {
+  Widget _topBarAndLogo() {
     return Column(children: [
-      RichText(
-        text: const TextSpan(
-          style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, letterSpacing: .5, color: Colors.white),
-          children: [TextSpan(text: 'GO'), TextSpan(text: 'FLOW', style: TextStyle(color: kCyan))],
+      Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+        PopupMenuButton<String>(
+          icon: const Icon(Icons.menu, color: kMuted),
+          color: kInk2,
+          onSelected: (v) {
+            if (v == 'connect') _openConnect();
+            else if (v == 'help') _showHelp();
+            else if (v == 'about') _showAbout();
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(value: 'connect', child: Text('Connect', style: TextStyle(color: Colors.white))),
+            PopupMenuItem(value: 'help', child: Text('Help', style: TextStyle(color: Colors.white))),
+            PopupMenuItem(value: 'about', child: Text('About', style: TextStyle(color: Colors.white))),
+          ],
         ),
-      ),
-      const SizedBox(height: 6),
-      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Container(width: 8, height: 8, decoration: BoxDecoration(
-          shape: BoxShape.circle, color: _conn == Conn.ready ? kCyan : const Color(0xFF3A6470))),
-        const SizedBox(width: 7),
-        Text(_connLabel(), style: const TextStyle(fontSize: 12, letterSpacing: 2, color: kMuted)),
       ]),
+      Image.asset('logo.png', height: 40),
+      const SizedBox(height: 8),
+      GestureDetector(
+        onTap: _openConnect,
+        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Container(width: 8, height: 8, decoration: BoxDecoration(
+            shape: BoxShape.circle, color: ready ? kCyan : const Color(0xFF3A6470))),
+          const SizedBox(width: 7),
+          Text(connLabel(_conn), style: const TextStyle(fontSize: 12, letterSpacing: 2, color: kMuted)),
+        ]),
+      ),
     ]);
-  }
-
-  String _connLabel() {
-    switch (_conn) {
-      case Conn.scanning: return 'SEARCHING…';
-      case Conn.connecting: return 'CONNECTING…';
-      case Conn.ready: return 'CONNECTED';
-      case Conn.disconnected: return 'DISCONNECTED';
-      default: return 'VALVE CONTROL';
-    }
   }
 
   Widget _statusBlock() {
@@ -383,21 +413,16 @@ class _ControlScreenState extends State<ControlScreen> {
       const SizedBox(height: 10),
       ClipRRect(
         borderRadius: BorderRadius.circular(6),
-        child: SizedBox(
-          width: 200, height: 6,
+        child: SizedBox(width: 200, height: 6,
           child: LinearProgressIndicator(
             value: (_pct.clamp(0, 100)) / 100.0,
             backgroundColor: const Color(0xFF0A3742),
-            valueColor: const AlwaysStoppedAnimation(kCyan),
-          ),
-        ),
+            valueColor: const AlwaysStoppedAnimation(kCyan))),
       ),
       if (_voiceLatched)
-        Padding(
-          padding: const EdgeInsets.only(top: 8),
+        Padding(padding: const EdgeInsets.only(top: 8),
           child: Text('Auto-closing in $_voiceRemaining s',
-            style: const TextStyle(fontSize: 12, color: kCyan, fontWeight: FontWeight.w600)),
-        ),
+            style: const TextStyle(fontSize: 12, color: kCyan, fontWeight: FontWeight.w600))),
     ]);
   }
 
@@ -411,22 +436,17 @@ class _ControlScreenState extends State<ControlScreen> {
         scale: _holding ? 0.97 : 1.0,
         duration: const Duration(milliseconds: 80),
         child: Container(
-          width: 210, height: 210,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
+          width: 200, height: 200,
+          decoration: BoxDecoration(shape: BoxShape.circle,
             color: active ? kCyan : kInk2,
-            border: Border.all(color: active ? Colors.white.withOpacity(.4) : kCyan.withOpacity(.35), width: 2),
-          ),
-          child: Center(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Text('HOLD TO OPEN',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, letterSpacing: 1,
-                  color: active ? const Color(0xFF03222A) : (ready ? const Color(0xFFCFE9EF) : kMuted))),
-              const SizedBox(height: 5),
-              Text(ready ? 'or use voice below' : 'connect first',
-                style: TextStyle(fontSize: 11, color: active ? const Color(0xFF06363F) : kMuted)),
-            ]),
-          ),
+            border: Border.all(color: active ? Colors.white.withOpacity(.4) : kCyan.withOpacity(.35), width: 2)),
+          child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('HOLD TO OPEN', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, letterSpacing: 1,
+              color: active ? const Color(0xFF03222A) : (ready ? const Color(0xFFCFE9EF) : kMuted))),
+            const SizedBox(height: 5),
+            Text(ready ? 'or use voice below' : 'connect first',
+              style: TextStyle(fontSize: 11, color: active ? const Color(0xFF06363F) : kMuted)),
+          ])),
         ),
       ),
     );
@@ -439,29 +459,22 @@ class _ControlScreenState extends State<ControlScreen> {
         onTap: _speechReady ? _toggleVoice : null,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          decoration: BoxDecoration(
-            color: on ? kCyan : kInk2,
-            borderRadius: BorderRadius.circular(30),
-            border: Border.all(color: kCyan.withOpacity(.35)),
-          ),
+          decoration: BoxDecoration(color: on ? kCyan : kInk2,
+            borderRadius: BorderRadius.circular(30), border: Border.all(color: kCyan.withOpacity(.35))),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(on ? Icons.mic : Icons.mic_none,
-              color: on ? const Color(0xFF03222A) : kCyan, size: 20),
+            Icon(on ? Icons.mic : Icons.mic_none, color: on ? const Color(0xFF03222A) : kCyan, size: 20),
             const SizedBox(width: 10),
-            Text(
-              !_speechReady ? 'Voice unavailable'
-                : on ? 'Listening — say “open” or “close”' : 'Tap to turn on voice',
+            Text(!_speechReady ? 'Voice unavailable'
+                : on ? 'Listening — say “open” / “close”  (tap to mute)' : 'Voice muted — tap to listen',
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
                 color: on ? const Color(0xFF03222A) : Colors.white)),
           ]),
         ),
       ),
       if (on && _lastHeard.isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.only(top: 8),
+        Padding(padding: const EdgeInsets.only(top: 8),
           child: Text('heard: “$_lastHeard”',
-            style: const TextStyle(fontSize: 11, color: kMuted, fontStyle: FontStyle.italic)),
-        ),
+            style: const TextStyle(fontSize: 11, color: kMuted, fontStyle: FontStyle.italic))),
     ]);
   }
 
@@ -472,16 +485,102 @@ class _ControlScreenState extends State<ControlScreen> {
         'Hold the button or say “open”. The valve closes when you release, '
         'say “close”, or after 30 seconds — whichever comes first.',
         textAlign: TextAlign.center,
-        style: TextStyle(fontSize: 11, color: kMuted, height: 1.5),
-      ),
-      const SizedBox(height: 10),
+        style: TextStyle(fontSize: 11, color: kMuted, height: 1.5)),
+      const SizedBox(height: 8),
       if (disconnected)
-        OutlinedButton(
-          onPressed: _startScan,
-          style: OutlinedButton.styleFrom(
-            foregroundColor: kCyan, side: const BorderSide(color: kCyan)),
-          child: const Text('Reconnect'),
-        ),
+        OutlinedButton(onPressed: _openConnect,
+          style: OutlinedButton.styleFrom(foregroundColor: kCyan, side: const BorderSide(color: kCyan)),
+          child: const Text('Connect')),
     ]);
+  }
+}
+
+// =====================================================================
+//  CONNECT SCREEN — reached from the menu. Instructions + Search button.
+// =====================================================================
+class ConnectScreen extends StatelessWidget {
+  final ValueNotifier<Conn> status;
+  final VoidCallback onSearch;
+  const ConnectScreen({super.key, required this.status, required this.onSearch});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kInk,
+      appBar: AppBar(
+        backgroundColor: kInk, elevation: 0, foregroundColor: Colors.white,
+        title: const Text('Connect'),
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          child: Column(children: [
+            const Icon(Icons.bluetooth, color: kCyan, size: 34),
+            const SizedBox(height: 8),
+            const Text('Connect to GoFlowX',
+              style: TextStyle(color: Colors.white, fontSize: 19, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 12),
+            ValueListenableBuilder<Conn>(
+              valueListenable: status,
+              builder: (_, c, __) {
+                final ready = c == Conn.ready;
+                final busy = c == Conn.scanning || c == Conn.connecting;
+                return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Container(width: 9, height: 9, decoration: BoxDecoration(shape: BoxShape.circle,
+                    color: ready ? kCyan : busy ? const Color(0xFFF0B400) : const Color(0xFF3A6470))),
+                  const SizedBox(width: 8),
+                  Text(connLabel(c).replaceAll('…', '').trim().toLowerCase(),
+                    style: const TextStyle(color: kMuted, fontSize: 13)),
+                ]);
+              },
+            ),
+            const SizedBox(height: 22),
+            _step(1, 'Turn the GoFlowX device on. A light shows it is awake.'),
+            _step(2, 'Make sure your phone\u2019s Bluetooth is switched on.'),
+            _step(3, 'Tap \u201cSearch for device\u201d below.'),
+            _step(4, 'It finds \u201cGoFlowX\u201d and connects on its own. A green dot means ready.'),
+            const Spacer(),
+            ValueListenableBuilder<Conn>(
+              valueListenable: status,
+              builder: (_, c, __) {
+                final ready = c == Conn.ready;
+                final busy = c == Conn.scanning || c == Conn.connecting;
+                return SizedBox(width: double.infinity, child: ElevatedButton.icon(
+                  onPressed: (ready || busy) ? null : onSearch,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: ready ? kInk2 : kCyan,
+                    disabledBackgroundColor: ready ? kInk2 : const Color(0xFF0E3540),
+                    foregroundColor: ready ? Colors.white : const Color(0xFF03222A),
+                    disabledForegroundColor: ready ? kCyan : kMuted,
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                  icon: Icon(ready ? Icons.check : Icons.search),
+                  label: Text(ready ? 'Connected' : busy ? 'Searching…' : 'Search for device',
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                ));
+              },
+            ),
+            const SizedBox(height: 14),
+            const Text('Trouble connecting? Make sure the device is on and within a few metres, '
+              'then toggle Bluetooth off and on.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: Color(0xFF6E8B93), height: 1.5)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _step(int n, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(width: 26, height: 26, alignment: Alignment.center,
+          decoration: const BoxDecoration(color: kInk2, shape: BoxShape.circle),
+          child: Text('$n', style: const TextStyle(color: kCyan, fontSize: 13, fontWeight: FontWeight.w700))),
+        const SizedBox(width: 12),
+        Expanded(child: Text(text, style: const TextStyle(color: Color(0xFFD6E6EA), fontSize: 13, height: 1.45))),
+      ]),
+    );
   }
 }
