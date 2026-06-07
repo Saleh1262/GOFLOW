@@ -263,6 +263,7 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
     } catch (_) {
       _speechReady = false;
     }
+    if (_speechReady) { _voiceOn = true; _listen(); }
     if (mounted) setState(() {});
   }
 
@@ -277,11 +278,12 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
     if (!_voiceReady()) return;
     _speech.listen(
       onResult: _onSpeech,
-      listenFor: const Duration(seconds: 8),
-      pauseFor: const Duration(seconds: 2),
+      listenFor: const Duration(seconds: 60),
+      pauseFor: const Duration(seconds: 10),
       listenOptions: SpeechListenOptions(
         partialResults: true,
         cancelOnError: true,
+        onDevice: true,
         listenMode: ListenMode.dictation,
       ),
     );
@@ -290,8 +292,10 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
   bool _voiceReady() => _speechReady && _voiceOn;
 
   void _onSpeechStatus(String status) {
-    if (status == 'done' || status == 'notListening') {
-      if (mounted) setState(() => _voiceOn = false);
+    if ((status == 'done' || status == 'notListening') && _voiceOn) {
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (_voiceReady() && !_speech.isListening) _listen();
+      });
     }
   }
 
@@ -513,7 +517,7 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
             Icon(on ? Icons.mic : Icons.mic_none, color: on ? const Color(0xFF03222A) : kCyan, size: 20),
             const SizedBox(width: 10),
             Text(!_speechReady ? 'Voice unavailable'
-                : on ? 'Listening… say “open” or “close”' : 'Tap to speak (“open” / “close”)',
+                : on ? 'Listening hands-free — “open” / “close”  (tap to mute)' : 'Voice off — tap to listen',
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
                 color: on ? const Color(0xFF03222A) : Colors.white)),
           ]),
