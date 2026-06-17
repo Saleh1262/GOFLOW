@@ -10,7 +10,7 @@ import 'package:flutter/services.dart';
 //  DEMO MODE — true = test on ANY phone with NO hardware
 //  (Bluetooth + voice both simulated). false = talk to real PCB.
 // ============================================================
-const bool kDemoMode = true;
+const bool kDemoMode = false;
 
 const int kAutoCloseSecs = 30;
 
