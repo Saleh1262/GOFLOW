@@ -177,7 +177,8 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
     });
     try {
       await device.connect(timeout: const Duration(seconds: 12));
-      final services = await device.discoverServices();
+      await Future.delayed(const Duration(milliseconds: 500));
+final services = await device.discoverServices();
       for (final svc in services) {
         if (svc.uuid != kSvcUuid) continue;
         for (final c in svc.characteristics) {
