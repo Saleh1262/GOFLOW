@@ -178,7 +178,7 @@ class _ControlScreenState extends State<ControlScreen> with SingleTickerProvider
     try {
       await device.connect(timeout: const Duration(seconds: 12));
       await Future.delayed(const Duration(milliseconds: 500));
-final services = await device.discoverServices();
+      final services = await device.discoverServices();
       for (final svc in services) {
         if (svc.uuid != kSvcUuid) continue;
         for (final c in svc.characteristics) {
@@ -314,16 +314,26 @@ final services = await device.discoverServices();
   void _onSpeech(SpeechRecognitionResult result) {
     final words = result.recognizedWords.toLowerCase();
     if (words.isEmpty) return;
-    _lastHeard = words;
+
+    String? cmd;
     if (words.contains('exit') || words.contains('quit') || words.contains('goodbye') ||
         (words.contains('close') && words.contains('app'))) {
+      cmd = 'exit';
       _closeApp();
     } else if (words.contains('close') || words.contains('shut') || words.contains('stop')) {
+      cmd = 'close';
       _voiceClose();
     } else if (words.contains('open') || words.contains('drain')) {
+      cmd = 'open';
       _voiceOpen();
     }
-    if (mounted) setState(() {});
+
+    // Only react to and show recognised commands - ignore everything else the
+    // mic picks up, so random speech isn't transcribed or displayed.
+    if (cmd != null) {
+      _lastHeard = cmd;
+      if (mounted) setState(() {});
+    }
   }
 
   @override
@@ -412,7 +422,12 @@ final services = await device.discoverServices();
   Widget _topBarAndLogo() {
     final ready = _conn == Conn.ready;
     return Column(children: [
-      Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Row(children: const [
+          Icon(Icons.battery_full, color: kMint, size: 18),
+          SizedBox(width: 4),
+          Text('87%', style: TextStyle(color: kMint, fontSize: 13, fontWeight: FontWeight.w600)),
+        ]),
         PopupMenuButton<String>(
           icon: const Icon(Icons.menu, color: kMuted),
           color: kInk2,
