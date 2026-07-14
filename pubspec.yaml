@@ -1,7 +1,7 @@
 name: goflow_app
 description: GoFlowX — app-controlled flow management for the XIAO nRF52840.
 publish_to: 'none'
-version: 1.0.0+1
+version: 2.1.0+3
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -13,6 +13,8 @@ dependencies:
   flutter_blue_plus: ^1.32.12
   permission_handler: ^11.3.1
   speech_to_text: ^7.3.0
+  shared_preferences: ^2.3.0
+  flutter_local_notifications: ^18.0.1
 
 dev_dependencies:
   flutter_lints: ^4.0.0
