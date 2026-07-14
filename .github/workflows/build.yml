@@ -45,6 +45,20 @@ jobs:
         run: |
           sed -i '0,/android:label="[^"]*"/s//android:label="GoFlowX"/' android/app/src/main/AndroidManifest.xml
 
+      - name: Enable core library desugaring (needed by flutter_local_notifications)
+        run: |
+          if [ -f android/app/build.gradle.kts ]; then
+            f=android/app/build.gradle.kts
+            sed -i 's/compileOptions {/compileOptions {\n        isCoreLibraryDesugaringEnabled = true/' "$f"
+            printf '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n' >> "$f"
+          else
+            f=android/app/build.gradle
+            sed -i 's/compileOptions {/compileOptions {\n        coreLibraryDesugaringEnabled true/' "$f"
+            printf '\ndependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"\n}\n' >> "$f"
+          fi
+          echo "--- patched $f"
+          tail -20 "$f"
+
       - name: Download the packages
         run: flutter pub get
 
